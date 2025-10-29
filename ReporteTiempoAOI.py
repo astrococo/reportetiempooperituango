@@ -218,9 +218,6 @@ with cE:
     horafin = st.time_input("Hora final de labores")
     fecha_fin = datetime.combine(fechafin, horafin)
 
-st.session_state.permitir_sabado_ordinario = st.checkbox("Permitir horas ordinarias en sábado (no festivo)", value=False)
-st.session_state.permitir_domingo_ordinario = st.checkbox("Permitir horas ordinarias en domingo (no festivo)", value=False)
-
 act = st.text_input("Actividad / Frente de trabajo", value="")
 sub_dias = st.number_input("Subsidio de Transporte (días)", min_value=0, step=1, value=0)
 
