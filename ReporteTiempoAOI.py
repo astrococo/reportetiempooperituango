@@ -136,7 +136,7 @@ with st.sidebar:
     up = st.file_uploader("Sube 'TablasReporteTiempoOperaciones.xlsx'", type=["xlsx"])
     fuente = up if up else (default_path if default_path.exists() else None)
     if not fuente:
-        st.warning("Falta el maestro de tablas. Sube el archivo o colócalo junto a app.py con ese nombre.")
+        st.warning("Falta el maestro de tablas. Sube el archivo con ese nombre.")
         st.stop()
 
     personal, j_diaria, j_horaria, festivos_df, config = load_tables(fuente)
