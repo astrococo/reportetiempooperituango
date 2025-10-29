@@ -173,7 +173,7 @@ if "nov_df" not in st.session_state:
         "Actividad / Frente de trabajo",
         "Subsidio de Transporte (días)",
         "Ausentismo - Concepto", "Ausentismo - Hora Inicio", "Ausentismo - Hora Fin", "Ausentismo - Justificación",
-        "Descontar Almuerzo"
+        "Descontar Almuerzo", "Es Festivo (Manual)"
     ])
 
 st.subheader("1) Agregar registro")
@@ -222,6 +222,7 @@ act = st.text_input("Actividad / Frente de trabajo", value="")
 sub_dias = st.number_input("Subsidio de Transporte (días)", min_value=0, step=1, value=0)
 
 descontar_almuerzo_reg = st.checkbox("Descontar almuerzo en este registro", value=descontar_almuerzo_default)
+es_festivo_manual = st.checkbox("Marcar este registro como FESTIVO (aunque sea entre semana)", value=False)
 
 st.markdown("**Ausentismo**")
 a1, a2, a3, a4 = st.columns([1, 1, 1, 2])
@@ -264,7 +265,7 @@ if st.button("➕ Agregar"):
             "Ausentismo - Hora Inicio": aus_i,
             "Ausentismo - Hora Fin": aus_f,
             "Ausentismo - Justificación": aus_j,
-            "Descontar Almuerzo": bool(descontar_almuerzo_reg),
+            "Descontar Almuerzo": bool(descontar_almuerzo_reg),"Es Festivo (Manual)": es_festivo_manual
         }
         st.session_state.nov_df = pd.concat([st.session_state.nov_df, pd.DataFrame([fila])], ignore_index=True)
         st.success("Registro agregado.")
@@ -286,13 +287,24 @@ st.session_state.nov_df = st.data_editor(
     },
 )
 
-def es_festivo_fn_local(d: date) -> bool:
+def es_festivo_fn_local(d: date, row_idx: Optional[int] = None) -> bool:
+    # 1. Si es domingo → siempre festivo
     if d.weekday() == 6:
         return True
+
+    # 2. Si el usuario marcó "Es Festivo (Manual)" en este registro
+    if row_idx is not None and "Es Festivo (Manual)" in df_input.columns:
+        if row_idx < len(df_input) and df_input.iloc[row_idx]["Es Festivo (Manual)"]:
+            return True
+
+    # 3. Si está en la tabla de festivos
     try:
-        return any(pd.to_datetime(festivos_df["Fecha"]).dt.date == d) if "Fecha" in festivos_df.columns and not festivos_df.empty else False
+        if "Fecha" in festivos_df.columns and not festivos_df.empty:
+            return any(pd.to_datetime(festivos_df["Fecha"], errors='coerce').dt.date == d)
     except Exception:
-        return False
+        pass
+
+    return False
 
 def buscar_tipico(grupo: str, dia: str):
     r = j_horaria[
@@ -554,7 +566,7 @@ for idx, row in df_input.iterrows():
         fi.to_pydatetime(), ff.to_pydatetime(),
         tip_ini, tip_fin,
         None,
-        es_festivo_fn_local,
+        lambda fecha: es_festivo_fn_local(fecha, row_idx=idx),  # ← Aquí pasamos el índice
         _allows_ordinario,
         bool(row.get("Descontar Almuerzo", True)), alm_i, alm_f,
         tope_restante_map=tope_restante_map,
