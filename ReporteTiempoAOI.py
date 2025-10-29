@@ -287,24 +287,41 @@ st.session_state.nov_df = st.data_editor(
     },
 )
 
-def es_festivo_fn_local(d: date, row_idx: Optional[int] = None) -> bool:
-    # 1. Si es domingo → siempre festivo
-    if d.weekday() == 6:
-        return True
+def es_festivo_fn_local(d: date, row_idx: Optional[int] = None) -> Tuple[bool, Optional[float]]:
+    """
+    Devuelve: (es_festivo: bool, tope_horas_dia: Optional[float])
+    Si es festivo manual → devuelve tope del DOMINGO
+    """
+    es_festivo = False
+    tope_dia = None
 
-    # 2. Si el usuario marcó "Es Festivo (Manual)" en este registro
+    # 1. Domingo → siempre festivo + tope del domingo
+    if d.weekday() == 6:
+        es_festivo = True
+        tope_dia = tope_diario(grupo, "Domingo")  # grupo debe estar en scope
+        return es_festivo, tope_dia
+
+    # 2. Festivo manual por registro
     if row_idx is not None and "Es Festivo (Manual)" in df_input.columns:
         if row_idx < len(df_input) and df_input.iloc[row_idx]["Es Festivo (Manual)"]:
-            return True
+            es_festivo = True
+            tope_dia = tope_diario(grupo, "Domingo")
+            return es_festivo, tope_dia
 
-    # 3. Si está en la tabla de festivos
+    # 3. Festivo oficial en tabla
     try:
         if "Fecha" in festivos_df.columns and not festivos_df.empty:
-            return any(pd.to_datetime(festivos_df["Fecha"], errors='coerce').dt.date == d)
+            if any(pd.to_datetime(festivos_df["Fecha"], errors='coerce').dt.date == d):
+                es_festivo = True
+                # Para festivos oficiales: usamos tope del día real (no domingo)
+                tope_dia = tope_diario(grupo, DIAS_ES[d.weekday()])
+                return es_festivo, tope_dia
     except Exception:
         pass
 
-    return False
+    # 4. Día normal
+    tope_dia = tope_diario(grupo, DIAS_ES[d.weekday()])
+    return es_festivo, tope_dia
 
 def buscar_tipico(grupo: str, dia: str):
     r = j_horaria[
@@ -337,7 +354,7 @@ def classify_interval(
     start_dt: datetime, end_dt: datetime,
     tipico_inicio: Optional[time], tipico_fin: Optional[time],
     tope_horas_dia_inicio: Optional[float],
-    is_festivo_fn: Callable[[date], bool],
+    is_festivo_fn: Callable[[date], Tuple[bool, Optional[float]]],  # ← ahora devuelve tupla
     allows_ordinario_fn: Callable[[date], bool],
     descontar_almuerzo: bool = False,
     alm_i: Optional[time] = None, alm_f: Optional[time] = None,
@@ -348,6 +365,7 @@ def classify_interval(
     base_festivo_min_fn: Optional[Callable[[date], int]] = None,
     get_tope_horas_fn: Optional[Callable[[date], Optional[float]]] = None,
 ) -> MinutesDict:
+    
     mins: MinutesDict = dict(OD=0, ON=0, ED=0, EN=0, FD=0, FN=0, EFD=0, EFN=0)
 
     if tope_restante_map is None:
@@ -435,7 +453,7 @@ def classify_interval(
                 continue
 
             if wname == "DIA_06_18":
-                es_festivo = is_festivo_fn(d)
+                es_festivo, tope_dia_actual = is_festivo_fn(d)
                 permite_ordin = allows_ordinario_fn(d)
                 if es_festivo:
                     take, extra = _consume_festivo_base(d, eff)
@@ -453,7 +471,7 @@ def classify_interval(
                             mins["ED"] += over
 
             elif wname == "NOC_00_06":
-                es_festivo = is_festivo_fn(d)
+                es_festivo, tope_dia_actual = is_festivo_fn(d)
                 permite_ordin = allows_ordinario_fn(d)
                 if es_festivo:
                     take, extra = _consume_festivo_base(d, eff)
@@ -471,7 +489,7 @@ def classify_interval(
                             mins["EN"] += over
 
             else:  # NOC_18_24
-                es_festivo = is_festivo_fn(d)
+                es_festivo, tope_dia_actual = is_festivo_fn(d)
                 permite_ordin = allows_ordinario_fn(d)
                 if es_festivo:
                     take, extra = _consume_festivo_base(d, eff)
@@ -527,18 +545,29 @@ for idx, row in df_input.iterrows():
     d = fi.date()
     dia_nom = DIAS_ES[d.weekday()]
     tip_ini, tip_fin, alm_i, alm_f = buscar_tipico(grupo, dia_nom)
-    tope_ini_h = tope_diario(grupo, dia_nom)
+
+    # NUEVO: Obtener festivo + tope del día (puede ser del domingo)
+    es_festivo_dia, tope_dia_real = es_festivo_fn_local(d, row_idx=idx)
+    
+    # Si es festivo manual → jornada = domingo
+    if row.get("Es Festivo (Manual)", False):
+        dia_para_tope = "Domingo"
+    else:
+        dia_para_tope = dia_nom
+    
+    # Tope inicial (usado para OD/ON)
+    tope_ini_h = tope_diario(grupo, dia_para_tope)
 
     def _base_festivo_min(fecha_d: date) -> int:
-        dn = DIAS_ES[fecha_d.weekday()]
-        th = tope_diario(grupo, dn)
+        # Si es festivo manual → base = tope del DOMINGO
+        if row.get("Es Festivo (Manual)", False):
+            th = tope_diario(grupo, "Domingo")
+        else:
+            dn = DIAS_ES[fecha_d.weekday()]
+            th = tope_diario(grupo, dn)
         if th is None:
             th = DEFAULT_BASE_FESTIVA_HORAS
         return int(th * 60)
-
-    def _get_tope_horas(fecha_d: date) -> Optional[float]:
-        dn = DIAS_ES[fecha_d.weekday()]
-        return tope_diario(grupo, dn)
 
     def _allows_ordinario(fecha_d: date) -> bool:
         wd = fecha_d.weekday()
@@ -565,16 +594,21 @@ for idx, row in df_input.iterrows():
     mins = classify_interval(
         fi.to_pydatetime(), ff.to_pydatetime(),
         tip_ini, tip_fin,
-        None,
-        lambda fecha: es_festivo_fn_local(fecha, row_idx=idx),  # ← Aquí pasamos el índice
+        tope_ini_h,  # ← tope del día real (o domingo si festivo manual)
+        lambda fecha: es_festivo_fn_local(fecha, row_idx=idx),  # ← devuelve (bool, tope)
         _allows_ordinario,
-        bool(row.get("Descontar Almuerzo", True)), alm_i, alm_f,
+        bool(row.get("Descontar Almuerzo", True)),
+        alm_i, alm_f,
         tope_restante_map=tope_restante_map,
         festivo_base_map=festivo_base_map,
         lunch_consumed_map=lunch_consumed_map,
         tag=tag,
         base_festivo_min_fn=_base_festivo_min,
-        get_tope_horas_fn=_get_tope_horas
+        get_tope_horas_fn=lambda fecha: (
+            tope_diario(grupo, "Domingo") 
+            if row.get("Es Festivo (Manual)", False) 
+            else tope_diario(grupo, DIAS_ES[fecha.weekday()])
+        )
     )
 
     total_min = sum(mins.values())
